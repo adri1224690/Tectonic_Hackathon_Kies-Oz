@@ -1,0 +1,64 @@
+{
+  "case_company_links": [
+    {
+      "id": "link-001",
+      "case_id": "case-001",
+      "company_id": "comp-001"
+    },
+    {
+      "id": "link-002",
+      "case_id": "case-002",
+      "company_id": "comp-001"
+    },
+    {
+      "id": "link-003",
+      "case_id": "case-003",
+      "company_id": "comp-002"
+    },
+    {
+      "id": "link-004",
+      "case_id": "case-004",
+      "company_id": "comp-003"
+    },
+    {
+      "id": "link-005",
+      "case_id": "case-005",
+      "company_id": "comp-002"
+    },
+    {
+      "id": "link-006",
+      "case_id": "case-006",
+      "company_id": "comp-004"
+    },
+    {
+      "id": "link-007",
+      "case_id": "case-007",
+      "company_id": "comp-005"
+    },
+    {
+      "id": "link-008",
+      "case_id": "case-008",
+      "company_id": "comp-001"
+    },
+    {
+      "id": "link-009",
+      "case_id": "case-009",
+      "company_id": "comp-006"
+    },
+    {
+      "id": "link-010",
+      "case_id": "case-010",
+      "company_id": "comp-007"
+    },
+    {
+      "id": "link-011",
+      "case_id": "case-011",
+      "company_id": "comp-004"
+    },
+    {
+      "id": "link-012",
+      "case_id": "case-012",
+      "company_id": "comp-005"
+    }
+  ]
+}
