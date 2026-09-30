@@ -1,0 +1,88 @@
+{
+  "problem_document_relations": [
+    {
+      "problem_id": "case-001",
+      "document_id": "doc-001",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-002",
+      "document_id": "doc-002",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-003",
+      "document_id": "doc-003",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-004",
+      "document_id": "doc-004",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-005",
+      "document_id": "doc-005",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-006",
+      "document_id": "doc-006",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-007",
+      "document_id": "doc-007",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-008",
+      "document_id": "doc-008",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-009",
+      "document_id": "doc-009",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-010",
+      "document_id": "doc-010",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-011",
+      "document_id": "doc-006",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    },
+    {
+      "problem_id": "case-012",
+      "document_id": "doc-007",
+      "used": true,
+      "helpful": true,
+      "primary_source": true
+    }
+  ]
+}
