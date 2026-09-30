@@ -1,4 +1,7 @@
+"""
+Precedent & Trust System  (Kies-Oz / SD Worx case)
 ==================================================
+
 A secondary system that BACKS UP the main AI search engine.
 
     AI engine  ->  finds documents relevant to the client's problem
@@ -54,11 +57,32 @@ WILSON_Z = 1.96            # 95% confidence
 PRIOR_WEIGHT = 3           # pseudo-observations at neutral 0.5 (cold start)
 AI_WEIGHT_DEFAULT = 0.7    # share of the AI engine's score in the blended rank
 
-# Tier thresholds
-MIN_VOTES_FOR_TIER = 3
-PROVEN_MIN_UPVOTE_RATIO = 0.75
-PROVEN_MIN_USES = 3
-DISPUTED_MAX_UPVOTE_RATIO = 0.40
+# ---- Tier rules ---------------------------------------------------------
+# Labels say what the consultant should DO, not just how popular a document is.
+VERIFIED_MIN_VOTES = 3          # verified precedent needs votes AND solved outcomes
+VERIFIED_MIN_OUTCOMES = 3
+VERIFIED_MIN_RATE = 0.75        # upvote share and solve share
+EARLY_POSITIVE_MIN_RATE = 0.60
+CAUTION_MAX_RATE = 0.40         # below this (with >=3 data points) -> caution
+CONFIDENCE_MODERATE_AT = 3      # observations (votes + known outcomes) in scope
+CONFIDENCE_HIGH_AT = 8
+STALE_AFTER_DAYS = 730          # precedent not re-confirmed for ~2 years expires
+
+# The tier adjusts the final rank, so tier and ordering never contradict.
+TIER_MULTIPLIER = {
+    "Verified precedent": 1.00,
+    "Early positive": 1.00,
+    "Mixed results": 0.90,
+    "Use with caution": 0.70,
+    "Not yet rated": 1.00,
+}
+TIER_ACTION = {
+    "Verified precedent": "Safe to cite to the client as precedent.",
+    "Early positive": "Looks good so far - confirm the details before citing it.",
+    "Mixed results": "Results are inconsistent - read carefully and check fit.",
+    "Use with caution": "Prior consultants had problems with it - verify before relying on it.",
+    "Not yet rated": "No track record yet - treat as the AI engine's suggestion only.",
+}
 
 # Problem categories (used to give precedent a context; the AI engine can also
 # pass its own `problem_category` string).
@@ -97,6 +121,7 @@ class PrecedentSystem:
         documents_path: str,
         feedback_path: str = "feedback.json",
         reference_year: Optional[int] = None,
+        as_of: Optional[datetime] = None,
     ):
         self.companies = {c["id"]: c for c in self._load(companies_path)["companies"]}
         self.cases = {c["id"]: c for c in self._load(cases_path)["cases"]}
@@ -109,6 +134,7 @@ class PrecedentSystem:
             self.documents[d["id"]] = d
 
         self.reference_year = reference_year or datetime.now().year
+        self.as_of = as_of or datetime.now(timezone.utc)   # 'today' for staleness checks
         self.feedback_path = Path(feedback_path)
         # feedback[doc_id] = {"votes": {consultant: {...}}, "uses": [ {...}, ... ]}
         self.feedback: dict[str, dict] = defaultdict(lambda: {"votes": {}, "uses": []})
@@ -298,18 +324,100 @@ class PrecedentSystem:
         score = sum(TRUST_WEIGHTS[k] * v for k, v in parts.items())
         return {"score": round(score, 4), "components": {k: round(v, 4) for k, v in parts.items()}}
 
-    def tier(self, doc_id: str) -> str:
-        """Proven / Promising / Unverified / Disputed."""
-        c = self._counts(doc_id)
-        n = c["upvotes"] + c["downvotes"]
-        ratio = c["upvotes"] / n if n else None
-        if n >= MIN_VOTES_FOR_TIER and ratio < DISPUTED_MAX_UPVOTE_RATIO:
-            return "Disputed"
-        if n >= MIN_VOTES_FOR_TIER and ratio >= PROVEN_MIN_UPVOTE_RATIO and c["uses"] >= PROVEN_MIN_USES:
-            return "Proven"
-        if c["upvotes"] >= 1 and (ratio or 0) >= 0.5:
-            return "Promising"
-        return "Unverified"
+    # ---- scoped statistics: same problem type if we have it, else overall ----
+    @staticmethod
+    def _stats(votes: list, uses: list, basis: str) -> dict:
+        known = [u for u in uses if u["solved"] is not None]
+        stamps = [x["ts"] for x in list(votes) + list(uses) if x.get("ts")]
+        return {
+            "basis": basis,
+            "upvotes": sum(1 for v in votes if v["value"] > 0),
+            "downvotes": sum(1 for v in votes if v["value"] < 0),
+            "outcomes_known": len(known),
+            "solved": sum(1 for u in known if u["solved"]),
+            "last_ts": max(stamps) if stamps else None,
+        }
+
+    def _scoped_stats(self, doc_id: str, problem_category: Optional[str] = None) -> dict:
+        fb = self.feedback[doc_id]
+        votes, uses = list(fb["votes"].values()), fb["uses"]
+        if problem_category:
+            v = [x for x in votes if x.get("problem_category") == problem_category]
+            u = [x for x in uses if x.get("problem_category") == problem_category]
+            if v or any(x["solved"] is not None for x in u):
+                return self._stats(v, u, "same problem type")
+        return self._stats(votes, uses, "all problem types")
+
+    def tier(self, doc_id: str, company_id: Optional[str] = None,
+             problem_category: Optional[str] = None) -> dict:
+        """
+        Context-aware verdict. Returns:
+          label       : Verified precedent / Early positive / Mixed results /
+                        Use with caution / Not yet rated
+          confidence  : none / low / moderate / high (how much evidence backs it)
+          basis       : "same problem type" or "all problem types"
+          stale       : True if the last confirmation is older than STALE_AFTER_DAYS
+          action      : what the consultant should do
+          reason      : the numbers behind the label
+        """
+        self._check(doc_id)
+        s = self._scoped_stats(doc_id, problem_category)
+        nv = s["upvotes"] + s["downvotes"]
+        known = s["outcomes_known"]
+        n_obs = nv + known
+        vote_rate = s["upvotes"] / nv if nv else None
+        solve_rate = s["solved"] / known if known else None
+
+        # staleness of the most recent confirmation
+        stale, age_days = False, None
+        if s["last_ts"]:
+            age_days = (self.as_of - datetime.fromisoformat(s["last_ts"])).days
+            stale = age_days > STALE_AFTER_DAYS
+
+        negative = (
+            (nv >= 3 and vote_rate < CAUTION_MAX_RATE)
+            or (known >= 3 and solve_rate < CAUTION_MAX_RATE)
+            or (n_obs >= 1 and s["upvotes"] == 0 and s["solved"] == 0)   # only bad news so far
+        )
+        verified = (
+            nv >= VERIFIED_MIN_VOTES and vote_rate >= VERIFIED_MIN_RATE
+            and known >= VERIFIED_MIN_OUTCOMES and solve_rate >= VERIFIED_MIN_RATE
+        ) if (nv and known) else False
+        positive = (
+            (s["upvotes"] >= 1 or s["solved"] >= 1)
+            and (vote_rate is None or vote_rate >= EARLY_POSITIVE_MIN_RATE)
+            and (solve_rate is None or solve_rate >= EARLY_POSITIVE_MIN_RATE)
+        )
+
+        if n_obs == 0:
+            label = "Not yet rated"
+        elif negative:
+            label = "Use with caution"
+        elif verified and not stale:
+            label = "Verified precedent"
+        elif verified or positive:          # verified-but-stale is downgraded
+            label = "Early positive"
+        else:
+            label = "Mixed results"
+
+        confidence = ("none" if n_obs == 0 else
+                      "high" if n_obs >= CONFIDENCE_HIGH_AT else
+                      "moderate" if n_obs >= CONFIDENCE_MODERATE_AT else "low")
+
+        if n_obs == 0:
+            reason = "no consultant feedback yet"
+        else:
+            parts = []
+            if nv:
+                parts.append(f"{s['upvotes']} up / {s['downvotes']} down")
+            if known:
+                parts.append(f"{s['solved']}/{known} solved")
+            reason = ", ".join(parts) + f" ({s['basis']})"
+        if stale:
+            reason += f"; last confirmed {age_days // 30} months ago - may be outdated"
+
+        return {"label": label, "confidence": confidence, "basis": s["basis"],
+                "stale": stale, "action": TIER_ACTION[label], "reason": reason}
 
     def evidence(self, doc_id: str, company_id: Optional[str] = None,
                  problem_category: Optional[str] = None) -> str:
@@ -362,6 +470,8 @@ class PrecedentSystem:
                 ai_score = 1.0 - i / max(1, n)
             self._check(doc_id)
             t = self.trust_score(doc_id)
+            td = self.tier(doc_id, company_id, problem_category)
+            raw = ai_weight * ai_score + (1 - ai_weight) * t["score"]
             items.append({
                 "doc_id": doc_id,
                 "title": self.documents[doc_id]["title"],
@@ -369,10 +479,12 @@ class PrecedentSystem:
                 "ai_score": round(ai_score, 4),
                 "trust_score": t["score"],
                 "trust_components": t["components"],
-                "tier": self.tier(doc_id),
+                "tier": td["label"],
+                "tier_detail": td,
                 "evidence": self.evidence(doc_id, company_id, problem_category),
                 "precedent": self.precedent_record(doc_id, company_id, problem_category),
-                "combined_score": round(ai_weight * ai_score + (1 - ai_weight) * t["score"], 4),
+                "score_before_tier": round(raw, 4),
+                "combined_score": round(raw * TIER_MULTIPLIER[td["label"]], 4),
             })
         for rank, it in enumerate(sorted(items, key=lambda x: x["combined_score"], reverse=True), 1):
             it["trusted_rank"] = rank
@@ -392,7 +504,7 @@ class PrecedentSystem:
 
     def leaderboard(self, top_n: int = 10) -> list[dict]:
         """Most trusted documents overall (for monitoring the system)."""
-        rows = [{"doc_id": d, "title": doc["title"], "tier": self.tier(d),
+        rows = [{"doc_id": d, "title": doc["title"], "tier": self.tier(d)["label"],
                  "trust_score": self.trust_score(d)["score"], **self._counts(d)}
                 for d, doc in self.documents.items()]
         return sorted(rows, key=lambda r: r["trust_score"], reverse=True)[:top_n]
@@ -457,9 +569,15 @@ class PrecedentSystem:
 # --------------------------------------------------------------------------
 def _show(results: list[dict]) -> None:
     for r in results:
-        print(f"  AI #{r['ai_rank']} -> Trusted #{r['trusted_rank']} | {r['doc_id']} "
-              f"[{r['tier']}] ai={r['ai_score']:.2f} trust={r['trust_score']:.2f} "
-              f"combined={r['combined_score']:.2f}\n      {r['title']}\n      proof: {r['evidence']}")
+        d = r["tier_detail"]
+        print(f"  AI #{r['ai_rank']} -> Trusted #{r['trusted_rank']} | {r['doc_id']} {r['title']}")
+        print(f"      proof : {r['evidence']}")
+        print(f"      tier  : {r['tier']}  (confidence: {d['confidence']}, basis: {d['basis']})")
+        print(f"      action: {d['action']}")
+        if d["stale"]:
+            print(f"      note  : {d['reason']}")
+        print(f"      score : ai={r['ai_score']:.2f} trust={r['trust_score']:.2f} "
+              f"-> combined={r['combined_score']:.2f}")
 
 
 if __name__ == "__main__":
@@ -474,39 +592,43 @@ if __name__ == "__main__":
         base / "mockmockCompaniesDB.json", base / "mockProblemsDB.json",
         base / "mockDocumentDB.json", feedback_path=fb_file, reference_year=2026)
 
-    # What the main AI engine returned for: "Brightwave asks for an inflation-based raise"
+    salary = dict(company_id="comp-001", problem_category="salary_adjustment")
+    equity = dict(company_id="comp-002", problem_category="pay_equity")
+
     ai_output = [
         {"doc_id": "doc-003", "ai_score": 0.93},
         {"doc_id": "doc-008", "ai_score": 0.90},
         {"doc_id": "doc-001", "ai_score": 0.72},
         {"doc_id": "doc-010", "ai_score": 0.55},
     ]
-    ctx = dict(company_id="comp-001", problem_category="salary_adjustment")
 
-    print("=== Day 1: no feedback yet (AI order is preserved) ===")
-    _show(ps.verify(ai_output, **ctx))
+    print("=== Day 1: no feedback (AI order preserved, nothing claimed) ===")
+    _show(ps.verify(ai_output, **salary))
 
-    # Consultants work with the results and give feedback
+    # doc-008: upvoted AND solved, salary-adjustment requests
     for who in ["cons-A", "cons-B", "cons-C"]:
-        ps.record_use("doc-008", who, solved=True, **ctx)
-        ps.upvote("doc-008", who, **ctx)
-    ps.upvote("doc-008", "cons-A", comment="Same inflation clause we needed", **ctx)
-    for who in ["cons-A", "cons-D"]:
-        ps.record_use("doc-001", who, solved=True, **ctx)
-        ps.upvote("doc-001", who, **ctx)
+        ps.record_use("doc-008", who, solved=True, **salary)
+        ps.upvote("doc-008", who, **salary)
+    # doc-003: failed on salary-adjustment requests ...
     for who in ["cons-B", "cons-C", "cons-D"]:
-        ps.record_use("doc-003", who, solved=False, **ctx)
-        ps.downvote("doc-003", who, **ctx)
+        ps.record_use("doc-003", who, solved=False, **salary)
+        ps.downvote("doc-003", who, **salary)
+    # ... but worked on pay-equity requests
+    for who in ["cons-E", "cons-F", "cons-G"]:
+        ps.record_use("doc-003", who, solved=True, **equity)
+        ps.upvote("doc-003", who, **equity)
+    # doc-001: only upvotes, nobody confirmed it solved anything
+    for who in ["cons-A", "cons-D", "cons-H"]:
+        ps.upvote("doc-001", who, **salary)
+    # doc-010: verified long ago (2022), never re-confirmed
+    for who in ["old-1", "old-2", "old-3"]:
+        ps.feedback["doc-010"]["votes"][who] = {"value": 1, "company_id": "comp-007",
+            "problem_category": "salary_adjustment", "comment": None, "ts": "2022-03-01T10:00:00+00:00"}
+        ps.feedback["doc-010"]["uses"].append({"consultant": who, "company_id": "comp-007",
+            "problem_category": "salary_adjustment", "solved": True, "ts": "2022-03-01T10:00:00+00:00"})
 
-    print("\n=== Later: same AI output, now backed by consultant precedent ===")
-    _show(ps.verify(ai_output, **ctx))
+    print("\n=== Request type: SALARY ADJUSTMENT (same AI output, now with precedent) ===")
+    _show(ps.verify(ai_output, **salary))
 
-    print("\n=== Trusted contacts for these documents ===")
-    for c in ps.trusted_contacts([r["doc_id"] for r in ai_output], top_n=3):
-        print(f"  {c['name']}: {c['reliability']} {c['documents']}")
-
-    print("\n=== Client profile (Brightwave) ===")
-    p = ps.client_profile("comp-001")
-    print(json.dumps({k: p[k] for k in ("company", "cases_total", "solve_rate",
-                                        "problem_categories", "predicted_problems",
-                                        "prediction_basis")}, indent=2))
+    print("\n=== Request type: PAY EQUITY (doc-003 judged on its own merits) ===")
+    _show(ps.verify([{"doc_id": "doc-003", "ai_score": 0.93}], **equity))
