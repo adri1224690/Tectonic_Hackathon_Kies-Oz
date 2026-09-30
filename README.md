@@ -13,9 +13,9 @@ The assumption used for the solution is based on that all information is already
      2. Unique cases
      3. Company type (assumption 2: SDWorx already has a company profile with things like country, department...). This is used to relate to companies with similar problems. 
      4. Predictions of future problems.
-      meaning predictiong of the porblmes based on the problem profile and teh company profile:
-      1. if company has a profile and history then based on their history and problem history
-      2. if company is a new client build its profile but no history, predict potential problems based on similar companies profiles
+       meaning predicting of the problems based on the problem profile and the company profile:
+        1. if company has a profile and history then based on their history and problem history
+        2. if company is a new client build its profile but no history, predict potential problems based on similar companies profiles
 3. Problem profile
   1. Most recent precedent
   2. duration to solve
