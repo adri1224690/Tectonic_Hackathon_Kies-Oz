@@ -565,6 +565,68 @@ class PrecedentSystem:
 
 
 # --------------------------------------------------------------------------
+# Plain-language guide (generated from the constants above, so it never drifts
+# out of sync with the real rules)
+# --------------------------------------------------------------------------
+def rules_guide() -> str:
+    pct = lambda x: f"{x:.0%}"
+    w = TRUST_WEIGHTS
+    return f"""# How document ratings work
+
+Documents suggested by the AI search engine are backed by what previous
+consultants found useful. This guide explains the labels you see and how
+they are calculated.
+
+## What you can do
+- **Upvote / downvote** a document you used. One vote per person per document;
+  you can change or remove your vote later.
+- **Report the outcome** ("did it solve the client's problem?"). This is the
+  strongest evidence in the system, so please answer when asked.
+- **Comments** and your consultant ID are visible to colleagues.
+
+## The labels
+| Label | What it means | What to do |
+|---|---|---|
+| **Verified precedent** | At least {VERIFIED_MIN_VOTES} votes with {pct(VERIFIED_MIN_RATE)}+ upvoted AND at least {VERIFIED_MIN_OUTCOMES} reported outcomes with {pct(VERIFIED_MIN_RATE)}+ solved, recently confirmed | {TIER_ACTION["Verified precedent"]} |
+| **Early positive** | Mostly positive feedback ({pct(EARLY_POSITIVE_MIN_RATE)}+), but not enough votes/outcomes yet, or the last confirmation is older than {STALE_AFTER_DAYS // 365} years | {TIER_ACTION["Early positive"]} |
+| **Mixed results** | Feedback is inconsistent | {TIER_ACTION["Mixed results"]} |
+| **Use with caution** | Under {pct(CAUTION_MAX_RATE)} upvoted or solved (3+ data points), or only negative feedback so far | {TIER_ACTION["Use with caution"]} |
+| **Not yet rated** | No consultant feedback yet | {TIER_ACTION["Not yet rated"]} |
+
+Votes alone can never make a document "Verified precedent": it must also have
+reported outcomes showing it actually solved the problem.
+
+## Context matters
+If colleagues have used the document for the **same type of problem**, the
+label is based only on that experience. Otherwise it is based on all feedback
+and the screen says so. A document can be verified for one problem type and
+"use with caution" for another.
+
+## Confidence
+Shown next to the label: **low** (fewer than {CONFIDENCE_MODERATE_AT} data points),
+**moderate** ({CONFIDENCE_MODERATE_AT}-{CONFIDENCE_HIGH_AT - 1}), **high** ({CONFIDENCE_HIGH_AT}+).
+
+## Trust score (0 to 1)
+| Part | Weight | Meaning |
+|---|---|---|
+| Votes | {pct(w["votes"])} | Upvotes vs downvotes, adjusted for how few votes there are |
+| Success | {pct(w["success"])} | Share of uses that solved the problem |
+| Usage | {pct(w["usage"])} | How often consultants relied on it |
+| Citations | {pct(w["citations"])} | How many other documents reference it |
+| Recency | {pct(w["recency"])} | Newer documents count more (half-life {RECENCY_HALF_LIFE_YEARS:g} years) |
+
+## How the final order is decided
+1. Final score = {pct(AI_WEIGHT_DEFAULT)} AI relevance + {pct(1 - AI_WEIGHT_DEFAULT)} trust score.
+2. Then adjusted by label: Mixed results x{TIER_MULTIPLIER["Mixed results"]}, Use with caution x{TIER_MULTIPLIER["Use with caution"]}; all other labels unchanged.
+3. Documents with no feedback are never penalised for having no history.
+
+## Limits
+Ratings reflect consultant experience, not a legal or compliance review.
+Always check that a document fits the client's country and current law.
+"""
+
+
+# --------------------------------------------------------------------------
 # Demo
 # --------------------------------------------------------------------------
 def _show(results: list[dict]) -> None:
@@ -583,6 +645,10 @@ def _show(results: list[dict]) -> None:
 if __name__ == "__main__":
     import sys
     import tempfile
+
+    if "--rules" in sys.argv:          # python precedent_system.py --rules > guide.md
+        print(rules_guide())
+        raise SystemExit
 
     base = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/mnt/user-data/uploads")
     fb_file = Path(tempfile.gettempdir()) / "demo_precedent_feedback.json"
