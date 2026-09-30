@@ -1,0 +1,93 @@
+{
+  "companies": [
+    {
+      "id": "comp-001",
+      "name": "Brightwave Consulting",
+      "country": "Belgium",
+      "industry": "Consulting",
+      "case_ids": [
+        "case-001",
+        "case-002",
+        "case-008"
+      ]
+    },
+    {
+      "id": "comp-002",
+      "name": "Nordlicht Software GmbH",
+      "country": "Germany",
+      "industry": "Software",
+      "case_ids": [
+        "case-003",
+        "case-005"
+      ]
+    },
+    {
+      "id": "comp-003",
+      "name": "Tulip Logistics BV",
+      "country": "Netherlands",
+      "industry": "Logistics",
+      "case_ids": [
+        "case-004"
+      ]
+    },
+    {
+      "id": "comp-004",
+      "name": "Lumière Manufacturing SA",
+      "country": "France",
+      "industry": "Manufacturing",
+      "case_ids": [
+        "case-006",
+        "case-011"
+      ]
+    },
+    {
+      "id": "comp-005",
+      "name": "Pinecone Analytics Inc.",
+      "country": "United States",
+      "industry": "Data Analytics",
+      "case_ids": [
+        "case-007",
+        "case-012"
+      ]
+    },
+    {
+      "id": "comp-006",
+      "name": "Fjord Digital AB",
+      "country": "Sweden",
+      "industry": "Digital Agency",
+      "case_ids": [
+        "case-009"
+      ]
+    },
+    {
+      "id": "comp-007",
+      "name": "Harborline Financial Ltd",
+      "country": "United Kingdom",
+      "industry": "Financial Services",
+      "case_ids": [
+        "case-010"
+      ]
+    },
+    {
+      "id": "comp-008",
+      "name": "Alpenblick Pharma AG",
+      "country": "Switzerland",
+      "industry": "Pharmaceuticals",
+      "case_ids": []
+    },
+    {
+      "id": "comp-009",
+      "name": "Sakura Robotics KK",
+      "country": "Japan",
+      "industry": "Robotics",
+      "case_ids": []
+    },
+    {
+      "id": "comp-010",
+      "name": "Maple Leaf Energy Corp",
+      "country": "Canada",
+      "industry": "Energy",
+      "case_ids": []
+    }
+  ]
+}
