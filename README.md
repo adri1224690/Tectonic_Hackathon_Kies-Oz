@@ -18,10 +18,10 @@ The assumption used for the solution is based on that all information is already
         2. if company is a new client build its profile but no history, predict potential problems based on similar companies profiles
 3. Problem profile
    1. Most recent precedent
-   2. duration to solve
-   3. cost of solving
-   4. percentage of solving in the past.
-   5. most realiable ponits of conatc( emolyees that solved similar cases and whose cases are most referenced)
-   6. prediction of potential new porblems based on this problem and past history of similar cases 
+   2. Duration to solve
+   3. Cost of solving
+   4. Percentage of solving in the past
+   5. Most realiable ponits of contact (emolyees that solved similar cases and whose cases are most referenced)
+   6. Prediction of potential new problems based on this problem and past history of similar cases 
   
   
