@@ -1,0 +1,10 @@
+python caseLogic.py link --case case-001 --related case-008 --type related --note "test"   # link_cases ⚠️ write
+python caseLogic.py list --case case-001                  # get_linked_cases
+
+python companyLogic.py add-company --name "Test NV" --country Belgium --industry Consulting   # add_company ⚠️ write
+python companyLogic.py link --case case-004 --company comp-008 --replace   # link_company_to_case ⚠️ write
+
+python predictionCode.py --country Belgium --size medium  # main
+
+python problem_document_relations.py 
+
