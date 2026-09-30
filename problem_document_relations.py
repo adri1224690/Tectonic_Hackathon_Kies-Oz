@@ -1,4 +1,7 @@
 import json
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 RELATIONS_FILE = "mockproblemDocumentRelations.json"
 DOCUMENTS_FILE = "mockDocumentDB.json"
@@ -10,12 +13,17 @@ PROBLEMS_FILE = "mockProblemsDB.json"
 # --------------------------------------------------
 
 def load_json(filename):
-    with open(filename, "r", encoding="utf-8") as file:
+    safe_filename = os.path.basename(filename)
+    safe_path = os.path.join(BASE_DIR, safe_filename)
+
+    with open(safe_path, "r", encoding="utf-8") as file:
         return json.load(file)
 
-
 def save_json(filename, data):
-    with open(filename, "w", encoding="utf-8") as file:
+    safe_filename = os.path.basename(filename)
+    safe_path = os.path.join(BASE_DIR, safe_filename)
+
+    with open(safe_path, "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2)
 
 
