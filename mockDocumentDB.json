@@ -1,0 +1,218 @@
+{
+  "documents": [
+    {
+      "id": "doc-001",
+      "title": "Annual Salary Review 2022",
+      "year": 2022,
+      "country": "Belgium",
+      "employees_involved": [
+        "Emma Janssens",
+        "Lucas Peeters"
+      ],
+      "company_involved": "Brightwave Consulting",
+      "company_id": "comp-001",
+      "cases_solved": [
+        "case-001"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-001",
+      "referenced_documents": []
+    },
+    {
+      "id": "doc-002",
+      "title": "Overtime Compensation Policy Update",
+      "year": 2023,
+      "country": "Belgium",
+      "employees_involved": [
+        "Noah Maes",
+        "Louise Claes"
+      ],
+      "company_involved": "Brightwave Consulting",
+      "company_id": "comp-001",
+      "cases_solved": [
+        "case-002"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-002",
+      "referenced_documents": [
+        "doc-001"
+      ]
+    },
+    {
+      "id": "doc-003",
+      "title": "Gender Pay Gap Audit",
+      "year": 2023,
+      "country": "Germany",
+      "employees_involved": [
+        "Anna Keller",
+        "Jonas Weber",
+        "Mia Schneider"
+      ],
+      "company_involved": "Nordlicht Software GmbH",
+      "company_id": "comp-002",
+      "cases_solved": [
+        "case-003"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-003",
+      "referenced_documents": []
+    },
+    {
+      "id": "doc-004",
+      "title": "Remote Work Allowance Agreement",
+      "year": 2024,
+      "country": "Netherlands",
+      "employees_involved": [
+        "Sanne de Vries",
+        "Daan Bakker"
+      ],
+      "company_involved": "Tulip Logistics BV",
+      "company_id": "comp-003",
+      "cases_solved": [
+        "case-004"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-004",
+      "referenced_documents": []
+    },
+    {
+      "id": "doc-005",
+      "title": "Performance Bonus Structure",
+      "year": 2024,
+      "country": "Germany",
+      "employees_involved": [
+        "Jonas Weber",
+        "Felix Hoffmann"
+      ],
+      "company_involved": "Nordlicht Software GmbH",
+      "company_id": "comp-002",
+      "cases_solved": [
+        "case-005"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-005",
+      "referenced_documents": [
+        "doc-003"
+      ]
+    },
+    {
+      "id": "doc-006",
+      "title": "Collective Bargaining Outcome",
+      "year": 2021,
+      "country": "France",
+      "employees_involved": [
+        "Camille Laurent",
+        "Hugo Martin",
+        "Chloé Bernard"
+      ],
+      "company_involved": "Lumière Manufacturing SA",
+      "company_id": "comp-004",
+      "cases_solved": [
+        "case-006",
+        "case-011"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-006",
+      "referenced_documents": []
+    },
+    {
+      "id": "doc-007",
+      "title": "Stock Option Grant Summary",
+      "year": 2025,
+      "country": "United States",
+      "employees_involved": [
+        "Olivia Carter",
+        "Ethan Brooks"
+      ],
+      "company_involved": "Pinecone Analytics Inc.",
+      "company_id": "comp-005",
+      "cases_solved": [
+        "case-007",
+        "case-012"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-007",
+      "referenced_documents": []
+    },
+    {
+      "id": "doc-008",
+      "title": "Cost-of-Living Salary Adjustment",
+      "year": 2025,
+      "country": "Belgium",
+      "employees_involved": [
+        "Emma Janssens",
+        "Thomas Willems",
+        "Julie Vermeulen"
+      ],
+      "company_involved": "Brightwave Consulting",
+      "company_id": "comp-001",
+      "cases_solved": [
+        "case-008"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-008",
+      "referenced_documents": [
+        "doc-001",
+        "doc-002"
+      ]
+    },
+    {
+      "id": "doc-009",
+      "title": "Parental Leave Pay Policy",
+      "year": 2022,
+      "country": "Sweden",
+      "employees_involved": [
+        "Elin Andersson",
+        "Oskar Lindberg"
+      ],
+      "company_involved": "Fjord Digital AB",
+      "company_id": "comp-006",
+      "cases_solved": [
+        "case-009"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-009",
+      "referenced_documents": []
+    },
+    {
+      "id": "doc-010",
+      "title": "Executive Compensation Benchmark",
+      "year": 2025,
+      "country": "United Kingdom",
+      "employees_involved": [
+        "Charlotte Hughes",
+        "Oliver Bennett"
+      ],
+      "company_involved": "Harborline Financial Ltd",
+      "company_id": "comp-007",
+      "cases_solved": [
+        "case-010"
+      ],
+      "upvotes": 0,
+      "downvotes": 0,
+      "rating": 0,
+      "link": "https://example.com/docs/doc-010",
+      "referenced_documents": [
+        "doc-007"
+      ]
+    }
+  ]
+}

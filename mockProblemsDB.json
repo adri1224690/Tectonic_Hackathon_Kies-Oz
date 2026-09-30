@@ -1,0 +1,88 @@
+{
+  "cases": [
+    {
+      "id": "case-001",
+      "title": "Unequal pay for equal role resolved",
+      "company_id": "comp-001",
+      "year": 2022,
+      "status": "solved"
+    },
+    {
+      "id": "case-002",
+      "title": "Unpaid overtime claim settled",
+      "company_id": "comp-001",
+      "year": 2023,
+      "status": "solved"
+    },
+    {
+      "id": "case-003",
+      "title": "Gender pay gap corrected",
+      "company_id": "comp-002",
+      "year": 2023,
+      "status": "solved"
+    },
+    {
+      "id": "case-004",
+      "title": "Remote work allowance dispute closed",
+      "company_id": "comp-003",
+      "year": 2024,
+      "status": "solved"
+    },
+    {
+      "id": "case-005",
+      "title": "Bonus eligibility disagreement mediated",
+      "company_id": "comp-002",
+      "year": 2024,
+      "status": "solved"
+    },
+    {
+      "id": "case-006",
+      "title": "Wage agreement deadlock ended",
+      "company_id": "comp-004",
+      "year": 2021,
+      "status": "solved"
+    },
+    {
+      "id": "case-007",
+      "title": "Stock option vesting error fixed",
+      "company_id": "comp-005",
+      "year": 2025,
+      "status": "solved"
+    },
+    {
+      "id": "case-008",
+      "title": "Inflation-adjustment request approved",
+      "company_id": "comp-001",
+      "year": 2025,
+      "status": "solved"
+    },
+    {
+      "id": "case-009",
+      "title": "Parental leave pay shortfall repaid",
+      "company_id": "comp-006",
+      "year": 2022,
+      "status": "solved"
+    },
+    {
+      "id": "case-010",
+      "title": "Executive pay disclosure dispute resolved",
+      "company_id": "comp-007",
+      "year": 2025,
+      "status": "solved"
+    },
+    {
+      "id": "case-011",
+      "title": "Night-shift premium miscalculation fixed",
+      "company_id": "comp-004",
+      "year": 2022,
+      "status": "solved"
+    },
+    {
+      "id": "case-012",
+      "title": "Contractor misclassification resolved",
+      "company_id": "comp-005",
+      "year": 2024,
+      "status": "solved"
+    }
+  ]
+}

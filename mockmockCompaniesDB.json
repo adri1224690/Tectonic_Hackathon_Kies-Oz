@@ -1,0 +1,64 @@
+{
+  "companies": [
+    {
+      "id": "comp-001",
+      "name": "Brightwave Consulting",
+      "country": "Belgium",
+      "industry": "Consulting"
+    },
+    {
+      "id": "comp-002",
+      "name": "Nordlicht Software GmbH",
+      "country": "Germany",
+      "industry": "Software"
+    },
+    {
+      "id": "comp-003",
+      "name": "Tulip Logistics BV",
+      "country": "Netherlands",
+      "industry": "Logistics"
+    },
+    {
+      "id": "comp-004",
+      "name": "Lumière Manufacturing SA",
+      "country": "France",
+      "industry": "Manufacturing"
+    },
+    {
+      "id": "comp-005",
+      "name": "Pinecone Analytics Inc.",
+      "country": "United States",
+      "industry": "Data Analytics"
+    },
+    {
+      "id": "comp-006",
+      "name": "Fjord Digital AB",
+      "country": "Sweden",
+      "industry": "Digital Agency"
+    },
+    {
+      "id": "comp-007",
+      "name": "Harborline Financial Ltd",
+      "country": "United Kingdom",
+      "industry": "Financial Services"
+    },
+    {
+      "id": "comp-008",
+      "name": "Alpenblick Pharma AG",
+      "country": "Switzerland",
+      "industry": "Pharmaceuticals"
+    },
+    {
+      "id": "comp-009",
+      "name": "Sakura Robotics KK",
+      "country": "Japan",
+      "industry": "Robotics"
+    },
+    {
+      "id": "comp-010",
+      "name": "Maple Leaf Energy Corp",
+      "country": "Canada",
+      "industry": "Energy"
+    }
+  ]
+}
