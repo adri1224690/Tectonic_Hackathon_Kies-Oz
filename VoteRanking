@@ -1,616 +1,512 @@
-#!/usr/bin/env python3
-"""Feedback-driven client document retrieval prototype.
+==================================================
+A secondary system that BACKS UP the main AI search engine.
 
-The prototype accepts the two supplied document formats:
+    AI engine  ->  finds documents relevant to the client's problem
+    This module -> tells the consultant how much those documents can be TRUSTED,
+                   based on what previous consultants actually found useful.
 
-* ``{"documents": [...]}`` with ``company_id`` and ``cases_solved``
-* ``{"documents": [...]}`` without those optional fields
+It does NOT search. It only:
+  1. Collects feedback   : upvote / downvote / "used it, problem solved (or not)"
+  2. Builds a track record per document (the precedent)
+  3. Scores trust, assigns a tier (Proven / Promising / Unverified / Disputed)
+  4. Attaches that evidence to the AI engine's results, and (optionally)
+     blends trust into the AI ranking.
+  5. Builds a client profile to give the precedent a context.
 
-It deliberately keeps the document fields used by the hackathon mock data
-(``upvotes``, ``downvotes``, ``rating``, ``referenced_documents``, and, when
-present, ``cases_solved``).  Client profiles and feedback history are stored
-alongside the document collection, rather than replacing its schema.
+Typical flow
+------------
+    ps = PrecedentSystem(companies, cases, documents)
 
-Only the Python standard library is required.
+    # 1. AI engine returns candidates (ids, or ids + its own relevance score)
+    ai_results = [{"doc_id": "doc-008", "ai_score": 0.92}, {"doc_id": "doc-001", "ai_score": 0.70}]
+
+    # 2. Attach proof / credibility
+    verified = ps.verify(ai_results, company_id="comp-001", problem_category="salary_adjustment")
+
+    # 3. Consultant opens a document, uses it, then gives feedback
+    ps.record_use("doc-008", "cons-A", company_id="comp-001",
+                  problem_category="salary_adjustment", solved=True)
+    ps.upvote("doc-008", "cons-A", comment="Exact same inflation clause we needed")
 """
 
 from __future__ import annotations
 
-import argparse
-import copy
 import json
 import math
 import re
-import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Iterable, Optional, Union
 
+# --------------------------------------------------------------------------
+# Configuration
+# --------------------------------------------------------------------------
+TRUST_WEIGHTS = {          # must sum to 1.0
+    "votes": 0.40,         # upvotes vs downvotes (confidence-adjusted)
+    "success": 0.20,       # share of uses that actually solved the problem
+    "usage": 0.15,         # how often consultants relied on it
+    "citations": 0.15,     # how many other documents reference it
+    "recency": 0.10,       # newer precedent matters more
+}
+RECENCY_HALF_LIFE_YEARS = 4.0
+WILSON_Z = 1.96            # 95% confidence
+PRIOR_WEIGHT = 3           # pseudo-observations at neutral 0.5 (cold start)
+AI_WEIGHT_DEFAULT = 0.7    # share of the AI engine's score in the blended rank
 
-STOP_WORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in",
-    "is", "it", "of", "on", "or", "the", "to", "with", "update", "policy",
-    "agreement", "outcome", "summary", "review", "structure", "audit",
+# Tier thresholds
+MIN_VOTES_FOR_TIER = 3
+PROVEN_MIN_UPVOTE_RATIO = 0.75
+PROVEN_MIN_USES = 3
+DISPUTED_MAX_UPVOTE_RATIO = 0.40
+
+# Problem categories (used to give precedent a context; the AI engine can also
+# pass its own `problem_category` string).
+CATEGORY_KEYWORDS = {
+    "pay_equity": ["unequal pay", "gender pay", "pay gap", "equal role"],
+    "overtime": ["overtime"],
+    "bonus": ["bonus"],
+    "remote_work": ["remote"],
+    "leave": ["parental", "leave"],
+    "equity_compensation": ["stock option", "vesting", "stock"],
+    "collective_bargaining": ["wage agreement", "bargaining", "deadlock"],
+    "salary_adjustment": ["inflation", "cost-of-living", "cost of living", "adjustment"],
+    "worker_classification": ["misclassification", "contractor"],
+    "executive_pay": ["executive"],
+    "shift_premium": ["night-shift", "shift premium"],
 }
 
-# A compact, transparent domain vocabulary is preferable to opaque NLP in a
-# hackathon prototype.  It lets a request using "pay" find a "salary" document.
-SYNONYM_GROUPS = {
-    "compensation": {
-        "salary", "salaries", "pay", "wage", "wages", "compensation",
-        "remuneration", "bonus", "bonuses", "allowance", "allowances",
-        "cost", "living", "adjustment", "adjustments",
-    },
-    "overtime": {"overtime", "extra", "hours", "hour", "time"},
-    "remote_work": {"remote", "hybrid", "telework", "teleworking", "homeworking"},
-    "equity": {"stock", "option", "options", "equity", "shares", "share"},
-    "leave": {"parental", "leave", "maternity", "paternity", "absence"},
-    "collective_bargaining": {"collective", "bargaining", "union", "labour", "labor"},
-    "pay_equity": {"gender", "gap", "equity", "equal", "fairness"},
-    "performance": {"performance", "bonus", "bonuses", "incentive", "incentives"},
-}
+
+def categorize(text: str) -> set[str]:
+    t = text.lower()
+    return {c for c, kws in CATEGORY_KEYWORDS.items() if any(k in t for k in kws)}
 
 
-def utc_now() -> str:
-    """Return a stable, timezone-aware timestamp for persisted audit data."""
+def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def normalise_text(value: Any) -> str:
-    """Normalise free text for case-insensitive comparisons."""
-    return re.sub(r"\s+", " ", str(value or "").strip().casefold())
-
-
-def slug(value: Any) -> str:
-    """Create a predictable identifier when a source record lacks company_id."""
-    result = re.sub(r"[^a-z0-9]+", "-", normalise_text(value)).strip("-")
-    return result or "unknown-company"
-
-
-def tokens(value: Any) -> List[str]:
-    """Extract useful word tokens from a title or a consultant request."""
-    raw_tokens = re.findall(r"[a-z0-9]+", normalise_text(value))
-    output: List[str] = []
-    for token in raw_tokens:
-        if token in STOP_WORDS or len(token) < 2:
-            continue
-        # Small singularisation step without pulling in a linguistic dependency.
-        if token.endswith("ies") and len(token) > 4:
-            token = token[:-3] + "y"
-        elif token.endswith("s") and not token.endswith("ss") and len(token) > 3:
-            token = token[:-1]
-        output.append(token)
-    return output
-
-
-def topic_labels(value: Any) -> set[str]:
-    """Return direct words plus domain-topic labels for semantic matching."""
-    raw = set(tokens(value))
-    labels = set(raw)
-    for label, words in SYNONYM_GROUPS.items():
-        if raw.intersection(words):
-            labels.add(label)
-    return labels
-
-
-def overlap_score(left: Any, right: Any) -> float:
-    """Score problem similarity from direct terms and domain-topic labels."""
-    left_words = set(tokens(left))
-    right_words = set(tokens(right))
-    if not left_words or not right_words:
-        return 0.0
-
-    direct_coverage = len(left_words.intersection(right_words)) / len(left_words)
-    left_topics = topic_labels(left)
-    right_topics = topic_labels(right)
-    semantic_topics = (left_topics - left_words).intersection(right_topics - right_words)
-    # A query that has a recognised topic can still match a differently worded title.
-    topic_coverage = len(semantic_topics) / max(1, len(left_topics - left_words))
-    return min(1.0, 0.70 * direct_coverage + 0.30 * topic_coverage)
-
-
-def _read_json(path: Path) -> Dict[str, Any]:
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except FileNotFoundError as error:
-        raise FileNotFoundError(f"JSON file not found: {path}") from error
-    except json.JSONDecodeError as error:
-        raise ValueError(f"Invalid JSON in {path}: {error}") from error
-    if not isinstance(payload, dict):
-        raise ValueError(f"Expected a JSON object in {path}")
-    return payload
-
-
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    """Write JSON atomically so feedback cannot leave a half-written database."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
-    ) as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
-        temporary_path = Path(handle.name)
-    temporary_path.replace(path)
-
-
-def load_document_database(path: str | Path) -> Dict[str, Any]:
-    """Load the original document envelope and validate its ``documents`` list."""
-    payload = _read_json(Path(path))
-    documents = payload.get("documents")
-    if not isinstance(documents, list):
-        raise ValueError("Document JSON must contain a 'documents' array")
-    for document in documents:
-        if not isinstance(document, dict) or not document.get("id"):
-            raise ValueError("Every document must be an object with an 'id'")
-    return payload
-
-
-def load_profile_store(path: str | Path) -> Dict[str, Any]:
-    """Load the optional profile sidecar, returning a valid empty store if absent."""
-    profile_path = Path(path)
-    if not profile_path.exists():
-        return {"profiles": {}}
-    payload = _read_json(profile_path)
-    if not isinstance(payload.get("profiles"), dict):
-        raise ValueError("Profile JSON must contain a 'profiles' object")
-    return payload
-
-
-def company_profile_key(company_id: Optional[str], company_name: Optional[str]) -> str:
-    if company_id:
-        return f"company_id:{normalise_text(company_id)}"
-    if company_name:
-        return f"company_name:{slug(company_name)}"
-    raise ValueError("Provide either company_id or company_name")
-
-
-def _safe_list(value: Any) -> List[Any]:
-    return list(value) if isinstance(value, list) else []
-
-
-def _non_empty_strings(values: Iterable[Any]) -> List[str]:
-    return [str(item) for item in values if str(item or "").strip()]
-
-
-def _most_common(counter: Counter[str], fallback: Optional[str] = None) -> Optional[str]:
-    return counter.most_common(1)[0][0] if counter else fallback
-
-
-class DocumentRankingService:
-    """Build client profiles, rank documents, and persist consultant feedback."""
-
-    def __init__(self, document_path: str | Path, profile_path: str | Path):
-        self.document_path = Path(document_path)
-        self.profile_path = Path(profile_path)
-
-    def _document_payload(self) -> Dict[str, Any]:
-        return load_document_database(self.document_path)
-
-    @staticmethod
-    def _client_documents(
-        documents: Sequence[Mapping[str, Any]],
-        company_id: Optional[str],
-        company_name: Optional[str],
-    ) -> List[Mapping[str, Any]]:
-        normalised_id = normalise_text(company_id)
-        normalised_name = normalise_text(company_name)
-        id_matches: List[Mapping[str, Any]] = []
-        name_matches: List[Mapping[str, Any]] = []
-        for document in documents:
-            document_id = normalise_text(document.get("company_id"))
-            document_name = normalise_text(document.get("company_involved"))
-            if normalised_id and document_id == normalised_id:
-                id_matches.append(document)
-            if normalised_name and document_name == normalised_name:
-                name_matches.append(document)
-        # Prefer a stable ID, but fall back to the name for MockupDB.json, which
-        # intentionally has no company_id field.
-        return id_matches or name_matches
-
-    def build_or_update_client_profile(
+# --------------------------------------------------------------------------
+# Main class
+# --------------------------------------------------------------------------
+class PrecedentSystem:
+    def __init__(
         self,
-        *,
+        companies_path: str,
+        cases_path: str,
+        documents_path: str,
+        feedback_path: str = "feedback.json",
+        reference_year: Optional[int] = None,
+    ):
+        self.companies = {c["id"]: c for c in self._load(companies_path)["companies"]}
+        self.cases = {c["id"]: c for c in self._load(cases_path)["cases"]}
+        self.documents = {}
+        for d in self._load(documents_path)["documents"]:
+            if "company_id" not in d:  # older mock without ids -> resolve by name
+                d["company_id"] = next(
+                    (i for i, c in self.companies.items() if c["name"] == d.get("company_involved")), None
+                )
+            self.documents[d["id"]] = d
+
+        self.reference_year = reference_year or datetime.now().year
+        self.feedback_path = Path(feedback_path)
+        # feedback[doc_id] = {"votes": {consultant: {...}}, "uses": [ {...}, ... ]}
+        self.feedback: dict[str, dict] = defaultdict(lambda: {"votes": {}, "uses": []})
+        self._load_feedback()
+
+    # ------------------------------------------------------------------ io
+    @staticmethod
+    def _load(path) -> dict:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def _load_feedback(self) -> None:
+        if self.feedback_path.exists():
+            raw = json.loads(self.feedback_path.read_text(encoding="utf-8"))
+            for doc_id, fb in raw.items():
+                self.feedback[doc_id] = {"votes": fb.get("votes", {}), "uses": fb.get("uses", [])}
+
+    def _save(self) -> None:
+        self.feedback_path.write_text(json.dumps(self.feedback, indent=2), encoding="utf-8")
+
+    def _check(self, doc_id: str) -> None:
+        if doc_id not in self.documents:
+            raise KeyError(f"Unknown document: {doc_id}")
+
+    # ================================================================
+    # 1. FEEDBACK COLLECTION
+    # ================================================================
+    def record_use(
+        self,
+        doc_id: str,
+        consultant_id: str,
         company_id: Optional[str] = None,
-        company_name: Optional[str] = None,
-        country: Optional[str] = None,
-        company_type: Optional[str] = None,
-        industry: Optional[str] = None,
-        department: Optional[str] = None,
-        past_question: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Derive a profile from past documents and merge new client signals.
-
-        ``company_type``, ``industry``, and ``department`` are optional because
-        neither mock collection contains them.  They are retained when the
-        consultant knows them and used in future matching.
+        problem_category: Optional[str] = None,
+        solved: Optional[bool] = None,
+    ) -> None:
         """
-        key = company_profile_key(company_id, company_name)
-        payload = self._document_payload()
-        documents = payload["documents"]
-        matching_documents = self._client_documents(documents, company_id, company_name)
-
-        profile_store = load_profile_store(self.profile_path)
-        previous = copy.deepcopy(profile_store["profiles"].get(key, {}))
-        country_counts: Counter[str] = Counter(
-            str(document["country"])
-            for document in matching_documents
-            if document.get("country")
-        )
-        title_token_counts: Counter[str] = Counter()
-        employee_documents: Dict[str, set[str]] = defaultdict(set)
-        employee_cases: Dict[str, set[str]] = defaultdict(set)
-        source_documents: set[str] = set(_safe_list(previous.get("source_documents")))
-        past_cases: set[str] = set(_safe_list(previous.get("past_cases")))
-
-        for document in matching_documents:
-            document_id = str(document["id"])
-            source_documents.add(document_id)
-            title_token_counts.update(tokens(document.get("title")))
-            cases = _non_empty_strings(_safe_list(document.get("cases_solved")))
-            past_cases.update(cases)
-            for employee in _non_empty_strings(_safe_list(document.get("employees_involved"))):
-                employee_documents[employee].add(document_id)
-                employee_cases[employee].update(cases)
-
-        # Preserve historic employee expertise when a later source is less rich.
-        for person in _safe_list(previous.get("reliable_points_of_contact")):
-            if isinstance(person, dict) and person.get("name"):
-                employee_documents[str(person["name"])].update(_safe_list(person.get("documents")))
-                employee_cases[str(person["name"])].update(_safe_list(person.get("cases_solved")))
-
-        questions = _non_empty_strings(_safe_list(previous.get("past_questions")))
-        if past_question and past_question not in questions:
-            questions.append(past_question)
-
-        # Titles represent historical cases when no structured case-question field exists.
-        precedent_titles = _non_empty_strings(
-            document.get("title") for document in matching_documents
-        )
-        topic_candidates = [topic for topic, _ in title_token_counts.most_common(12)]
-        profile = {
-            "profile_id": key,
-            "company_id": company_id or previous.get("company_id"),
-            "company_name": company_name
-            or previous.get("company_name")
-            or _most_common(
-                Counter(
-                    str(document.get("company_involved"))
-                    for document in matching_documents
-                    if document.get("company_involved")
-                )
-            ),
-            "country": country or previous.get("country") or _most_common(country_counts),
-            "company_type": company_type or previous.get("company_type"),
-            "industry": industry or previous.get("industry"),
-            "department": department or previous.get("department"),
-            "source_documents": sorted(source_documents),
-            "past_cases": sorted(past_cases),
-            "past_questions": questions,
-            "precedent_titles": sorted(set(precedent_titles)),
-            "problem_topics": topic_candidates,
-            "reliable_points_of_contact": [
-                {
-                    "name": name,
-                    "documents": sorted(employee_documents[name]),
-                    "cases_solved": sorted(employee_cases[name]),
-                }
-                for name in sorted(
-                    employee_documents,
-                    key=lambda employee: (
-                        len(employee_cases[employee]),
-                        len(employee_documents[employee]),
-                        employee,
-                    ),
-                    reverse=True,
-                )
-            ],
-            "history_summary": {
-                "document_count": len(source_documents),
-                "case_count": len(past_cases),
-                "last_built_at": utc_now(),
-            },
-        }
-        profile_store["profiles"][key] = profile
-        _atomic_write_json(self.profile_path, profile_store)
-        return profile
-
-    @staticmethod
-    def _reference_counts(documents: Sequence[Mapping[str, Any]]) -> Counter[str]:
-        counts: Counter[str] = Counter()
-        for document in documents:
-            counts.update(_non_empty_strings(_safe_list(document.get("referenced_documents"))))
-        return counts
-
-    @classmethod
-    def usefulness_score(
-        cls, document: Mapping[str, Any], reference_counts: Mapping[str, int]
-    ) -> float:
-        """Return a 0–100 trust score from votes, solved cases, and citations.
-
-        The vote portion uses a Beta(1,1) prior.  New documents therefore begin
-        neutral instead of receiving an undeserved score of zero, while repeated
-        consultant feedback moves the score progressively.
+        A consultant opened and relied on a document the AI engine suggested.
+        `solved` = did it actually help resolve the client's problem?
+        (None = outcome not known yet; use `report_outcome` later.)
         """
-        upvotes = max(0, int(document.get("upvotes") or 0))
-        downvotes = max(0, int(document.get("downvotes") or 0))
-        successes = len(_safe_list(document.get("cases_solved")))
-        inbound_references = max(0, int(reference_counts.get(str(document.get("id")), 0)))
+        self._check(doc_id)
+        self.feedback[doc_id]["uses"].append({
+            "consultant": consultant_id,
+            "company_id": company_id,
+            "problem_category": problem_category,
+            "solved": solved,
+            "ts": _now(),
+        })
+        self._save()
 
-        feedback_quality = (upvotes + 1) / (upvotes + downvotes + 2)
-        case_success = min(1.0, successes / 3.0)
-        citation_support = min(1.0, inbound_references / 3.0)
-        return round(100.0 * (0.75 * feedback_quality + 0.15 * case_success + 0.10 * citation_support), 2)
+    def report_outcome(self, doc_id: str, consultant_id: str, solved: bool) -> bool:
+        """Fill in the outcome of the consultant's most recent use with unknown result."""
+        self._check(doc_id)
+        for use in reversed(self.feedback[doc_id]["uses"]):
+            if use["consultant"] == consultant_id and use["solved"] is None:
+                use["solved"] = solved
+                self._save()
+                return True
+        return False
 
-    @staticmethod
-    def _company_signal_score(
-        document: Mapping[str, Any], profile: Mapping[str, Any]
-    ) -> float:
-        compared = 0
-        matches = 0
-        for field in ("country", "company_type", "industry", "department"):
-            desired = normalise_text(profile.get(field))
-            actual = normalise_text(document.get(field))
-            if desired and actual:
-                compared += 1
-                matches += int(desired == actual)
-        return matches / compared if compared else 0.0
-
-    @staticmethod
-    def _same_company(document: Mapping[str, Any], profile: Mapping[str, Any]) -> bool:
-        profile_id = normalise_text(profile.get("company_id"))
-        document_id = normalise_text(document.get("company_id"))
-        if profile_id and document_id:
-            return profile_id == document_id
-        profile_name = normalise_text(profile.get("company_name"))
-        return bool(profile_name and profile_name == normalise_text(document.get("company_involved")))
-
-    @staticmethod
-    def _recency_score(year: Any, newest_year: int) -> float:
-        try:
-            document_year = int(year)
-        except (TypeError, ValueError):
-            return 0.0
-        # A seven-year linear window is explainable and avoids a hard cut-off.
-        return max(0.0, min(1.0, 1.0 - (newest_year - document_year) / 7.0))
-
-    def rank_documents(
+    def vote(
         self,
-        request: Mapping[str, Any],
-        profile: Mapping[str, Any],
-        limit: int = 5,
-    ) -> List[Dict[str, Any]]:
-        """Rank documents using problem, client, company, and trust signals."""
-        if limit < 1:
-            raise ValueError("limit must be at least 1")
-        documents = self._document_payload()["documents"]
-        reference_counts = self._reference_counts(documents)
-        years = [int(document["year"]) for document in documents if str(document.get("year", "")).isdigit()]
-        newest_year = max(years, default=datetime.now(timezone.utc).year)
-        problem = request.get("problem") or request.get("query") or request.get("title") or ""
-        requested_case = normalise_text(request.get("case_id"))
-        profile_history = " ".join(
-            _non_empty_strings(profile.get("problem_topics", []))
-            + _non_empty_strings(profile.get("past_questions", []))
-            + _non_empty_strings(profile.get("precedent_titles", []))
-        )
-        ranked: List[Dict[str, Any]] = []
-
-        for document in documents:
-            problem_relevance = overlap_score(problem, document.get("title"))
-            profile_alignment = overlap_score(profile_history, document.get("title"))
-            same_company = self._same_company(document, profile)
-            company_similarity = self._company_signal_score(document, profile)
-            has_case_precedent = bool(
-                requested_case
-                and requested_case
-                in {normalise_text(value) for value in _safe_list(document.get("cases_solved"))}
-            )
-            usefulness = self.usefulness_score(document, reference_counts)
-            recency = self._recency_score(document.get("year"), newest_year)
-
-            score = (
-                0.48 * problem_relevance
-                + 0.16 * float(same_company)
-                + 0.10 * company_similarity
-                + 0.10 * (usefulness / 100.0)
-                + 0.06 * profile_alignment
-                + 0.05 * recency
-                + 0.05 * float(has_case_precedent)
-            )
-            reasons: List[str] = []
-            if problem_relevance:
-                reasons.append("matches the requested problem")
-            if same_company:
-                reasons.append("is precedent for this client")
-            elif company_similarity:
-                reasons.append("matches available company signals")
-            if has_case_precedent:
-                reasons.append("matches the requested past case")
-            if usefulness >= 60:
-                reasons.append("has strong consultant feedback")
-            elif reference_counts.get(str(document.get("id")), 0):
-                reasons.append("is referenced by other documents")
-
-            ranked.append(
-                {
-                    "rank": 0,  # assigned after sorting
-                    "score": round(100.0 * score, 2),
-                    "usefulness_score": usefulness,
-                    "document": copy.deepcopy(document),
-                    "signals": {
-                        "problem_relevance": round(problem_relevance, 3),
-                        "same_company": same_company,
-                        "company_similarity": round(company_similarity, 3),
-                        "profile_alignment": round(profile_alignment, 3),
-                        "case_precedent": has_case_precedent,
-                        "recency": round(recency, 3),
-                    },
-                    "reasons": reasons or ["baseline recommendation; add more request signals"],
-                }
-            )
-
-        ranked.sort(
-            key=lambda item: (
-                item["score"],
-                item["usefulness_score"],
-                str(item["document"].get("year", "")),
-            ),
-            reverse=True,
-        )
-        for index, item in enumerate(ranked[:limit], start=1):
-            item["rank"] = index
-        return ranked[:limit]
-
-    def record_feedback(
-        self,
-        *,
-        document_id: str,
-        vote: str,
-        consultant: Optional[str] = None,
-        client_id: Optional[str] = None,
-        request_id: Optional[str] = None,
-        note: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Persist an up/down vote, update ``rating``, and return the document."""
-        normalised_vote = normalise_text(vote)
-        if normalised_vote not in {"up", "down"}:
-            raise ValueError("vote must be 'up' or 'down'")
-
-        payload = self._document_payload()
-        documents = payload["documents"]
-        selected = next(
-            (document for document in documents if str(document.get("id")) == str(document_id)), None
-        )
-        if selected is None:
-            raise ValueError(f"Unknown document id: {document_id}")
-
-        counter_field = "upvotes" if normalised_vote == "up" else "downvotes"
-        selected[counter_field] = max(0, int(selected.get(counter_field) or 0)) + 1
-        reference_counts = self._reference_counts(documents)
-        selected["rating"] = self.usefulness_score(selected, reference_counts)
-        event = {
-            "event_type": "document_feedback",
-            "timestamp": utc_now(),
-            "document_id": str(document_id),
-            "vote": normalised_vote,
-            "consultant": consultant,
-            "client_id": client_id,
-            "request_id": request_id,
-            "note": note,
-            "rating_after_feedback": selected["rating"],
-        }
-        # This optional top-level history is additive; the original documents
-        # array and every existing field remain intact.
-        feedback_events = payload.setdefault("feedback_events", [])
-        if not isinstance(feedback_events, list):
-            raise ValueError("Existing 'feedback_events' must be an array")
-        feedback_events.append(event)
-        _atomic_write_json(self.document_path, payload)
-        return {"document": copy.deepcopy(selected), "feedback_event": event}
-
-
-def profile_path_for(documents: str | Path, requested_path: Optional[str]) -> Path:
-    return Path(requested_path) if requested_path else Path(documents).with_name("client_profiles.json")
-
-
-def _profile_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--company-id", help="Stable company ID, when available")
-    parser.add_argument("--company-name", help="Company name (required if company ID is unknown)")
-    parser.add_argument("--country", help="Country signal, for example Belgium")
-    parser.add_argument("--company-type", help="Optional company-type signal")
-    parser.add_argument("--industry", help="Optional industry signal")
-    parser.add_argument("--department", help="Optional department signal")
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    profile = subparsers.add_parser("profile", help="Build or update a client profile")
-    profile.add_argument("--documents", required=True, help="Path to MockupDB.json or mockDocumentDB.json")
-    profile.add_argument("--profiles", help="Profile sidecar JSON (defaults beside --documents)")
-    _profile_arguments(profile)
-    profile.add_argument("--past-question", help="Optional new historical client question to retain")
-
-    search = subparsers.add_parser("search", help="Build the profile and return ranked documents")
-    search.add_argument("--documents", required=True, help="Path to document JSON")
-    search.add_argument("--profiles", help="Profile sidecar JSON (defaults beside --documents)")
-    _profile_arguments(search)
-    search.add_argument("--problem", required=True, help="New client request/problem text")
-    search.add_argument("--case-id", help="Optional structured past-case ID")
-    search.add_argument("--limit", type=int, default=5, help="Maximum recommendations (default: 5)")
-
-    feedback = subparsers.add_parser("feedback", help="Record a consultant's vote after opening a document")
-    feedback.add_argument("--documents", required=True, help="Path to document JSON to update")
-    feedback.add_argument("--profiles", help="Accepted for CLI consistency; feedback is written to --documents")
-    feedback.add_argument("--document-id", required=True)
-    feedback.add_argument("--vote", required=True, choices=("up", "down"))
-    feedback.add_argument("--consultant", help="Optional consultant identifier")
-    feedback.add_argument("--client-id", help="Optional client identifier for the audit event")
-    feedback.add_argument("--request-id", help="Optional request/case identifier for the audit event")
-    feedback.add_argument("--note", help="Optional explanation of the vote")
-
-    show = subparsers.add_parser("show-profile", help="Print a saved client profile")
-    show.add_argument("--documents", required=True, help="Used to resolve the default profile sidecar")
-    show.add_argument("--profiles", help="Profile sidecar JSON (defaults beside --documents)")
-    show.add_argument("--company-id")
-    show.add_argument("--company-name")
-    return parser
-
-
-def _profile_from_args(service: DocumentRankingService, args: argparse.Namespace) -> Dict[str, Any]:
-    return service.build_or_update_client_profile(
-        company_id=args.company_id,
-        company_name=args.company_name,
-        country=args.country,
-        company_type=args.company_type,
-        industry=args.industry,
-        department=args.department,
-        past_question=getattr(args, "past_question", None),
-    )
-
-
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    profiles = profile_path_for(args.documents, args.profiles)
-    service = DocumentRankingService(args.documents, profiles)
-
-    try:
-        if args.command == "profile":
-            result: Any = _profile_from_args(service, args)
-        elif args.command == "search":
-            profile = _profile_from_args(service, args)
-            request = {"problem": args.problem, "case_id": args.case_id}
-            result = {
-                "client_profile": profile,
-                "request": request,
-                "recommendations": service.rank_documents(request, profile, args.limit),
+        doc_id: str,
+        consultant_id: str,
+        value: int,
+        company_id: Optional[str] = None,
+        problem_category: Optional[str] = None,
+        comment: Optional[str] = None,
+    ) -> None:
+        """+1 upvote, -1 downvote, 0 retract. One vote per consultant per document."""
+        self._check(doc_id)
+        if value not in (-1, 0, 1):
+            raise ValueError("value must be +1, -1 or 0")
+        votes = self.feedback[doc_id]["votes"]
+        if value == 0:
+            votes.pop(consultant_id, None)
+        else:
+            votes[consultant_id] = {
+                "value": value, "company_id": company_id,
+                "problem_category": problem_category, "comment": comment, "ts": _now(),
             }
-        elif args.command == "feedback":
-            result = service.record_feedback(
-                document_id=args.document_id,
-                vote=args.vote,
-                consultant=args.consultant,
-                client_id=args.client_id,
-                request_id=args.request_id,
-                note=args.note,
-            )
-        elif args.command == "show-profile":
-            key = company_profile_key(args.company_id, args.company_name)
-            result = load_profile_store(profiles)["profiles"].get(key)
-            if result is None:
-                raise ValueError(f"No saved profile for {key}")
-        else:  # defensive: argparse limits the choices above
-            raise ValueError(f"Unsupported command: {args.command}")
-    except (FileNotFoundError, ValueError) as error:
-        parser.error(str(error))
+        self._save()
 
-    print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
+    def upvote(self, doc_id: str, consultant_id: str, **ctx) -> None:
+        self.vote(doc_id, consultant_id, +1, **ctx)
+
+    def downvote(self, doc_id: str, consultant_id: str, **ctx) -> None:
+        self.vote(doc_id, consultant_id, -1, **ctx)
+
+    # ================================================================
+    # 2. TRACK RECORD (the precedent)
+    # ================================================================
+    def _counts(self, doc_id: str) -> dict:
+        fb = self.feedback[doc_id]
+        up = sum(1 for v in fb["votes"].values() if v["value"] > 0)
+        down = sum(1 for v in fb["votes"].values() if v["value"] < 0)
+        known = [u for u in fb["uses"] if u["solved"] is not None]
+        return {
+            "upvotes": up, "downvotes": down,
+            "uses": len(fb["uses"]),
+            "outcomes_known": len(known),
+            "solved": sum(1 for u in known if u["solved"]),
+            "distinct_consultants": len(
+                {u["consultant"] for u in fb["uses"]} | set(fb["votes"])
+            ),
+        }
+
+    def _citation_counts(self) -> Counter:
+        c: Counter = Counter()
+        for d in self.documents.values():
+            for ref in d.get("referenced_documents", []):
+                c[ref] += 1
+        return c
+
+    def precedent_record(
+        self,
+        doc_id: str,
+        company_id: Optional[str] = None,
+        problem_category: Optional[str] = None,
+    ) -> dict:
+        """Raw, human-verifiable track record for one document."""
+        self._check(doc_id)
+        fb = self.feedback[doc_id]
+        rec = self._counts(doc_id)
+        rec["cited_by"] = self._citation_counts()[doc_id]
+        rec["last_used"] = max((u["ts"] for u in fb["uses"]), default=None)
+        rec["comments"] = [
+            {"consultant": c, "vote": v["value"], "comment": v["comment"]}
+            for c, v in fb["votes"].items() if v.get("comment")
+        ]
+
+        # precedent in the *same context* as the current request
+        def ctx_stats(pred):
+            uses = [u for u in fb["uses"] if pred(u)]
+            known = [u for u in uses if u["solved"] is not None]
+            return {"uses": len(uses), "solved": sum(1 for u in known if u["solved"]),
+                    "outcomes_known": len(known)}
+
+        if company_id:
+            rec["same_client"] = ctx_stats(lambda u: u["company_id"] == company_id)
+        if problem_category:
+            rec["same_problem_type"] = ctx_stats(lambda u: u["problem_category"] == problem_category)
+        return rec
+
+    # ================================================================
+    # 3. TRUST SCORE + TIER
+    # ================================================================
+    @staticmethod
+    def _wilson_lower_bound(up: int, down: int, z: float = WILSON_Z) -> float:
+        n = up + down
+        if n == 0:
+            return 0.0
+        p = up / n
+        denom = 1 + z * z / n
+        centre = p + z * z / (2 * n)
+        margin = z * math.sqrt((p * (1 - p) + z * z / (4 * n)) / n)
+        return max(0.0, (centre - margin) / denom)
+
+    def trust_score(self, doc_id: str) -> dict:
+        """Trust score in [0, 1] with a transparent breakdown."""
+        self._check(doc_id)
+        c = self._counts(doc_id)
+        n_votes = c["upvotes"] + c["downvotes"]
+
+        # votes: confidence-adjusted, neutral prior for unvoted docs
+        wilson = self._wilson_lower_bound(c["upvotes"], c["downvotes"])
+        votes = (wilson * n_votes + 0.5 * PRIOR_WEIGHT) / (n_votes + PRIOR_WEIGHT)
+
+        # success: smoothed solve rate
+        success = (c["solved"] + 0.5 * PRIOR_WEIGHT) / (c["outcomes_known"] + PRIOR_WEIGHT)
+
+        # usage: log-scaled relative to the most-used document
+        max_uses = max((len(fb["uses"]) for fb in self.feedback.values()), default=0)
+        usage = math.log1p(c["uses"]) / math.log1p(max_uses) if max_uses else 0.0
+
+        # citations: relative to the most-cited document
+        cites = self._citation_counts()
+        max_cit = max(cites.values(), default=0)
+        citations = cites[doc_id] / max_cit if max_cit else 0.0
+
+        # recency: half-life decay on the document year
+        age = max(0, self.reference_year - self.documents[doc_id].get("year", self.reference_year))
+        recency = 0.5 ** (age / RECENCY_HALF_LIFE_YEARS)
+
+        parts = {"votes": votes, "success": success, "usage": usage,
+                 "citations": citations, "recency": recency}
+        score = sum(TRUST_WEIGHTS[k] * v for k, v in parts.items())
+        return {"score": round(score, 4), "components": {k: round(v, 4) for k, v in parts.items()}}
+
+    def tier(self, doc_id: str) -> str:
+        """Proven / Promising / Unverified / Disputed."""
+        c = self._counts(doc_id)
+        n = c["upvotes"] + c["downvotes"]
+        ratio = c["upvotes"] / n if n else None
+        if n >= MIN_VOTES_FOR_TIER and ratio < DISPUTED_MAX_UPVOTE_RATIO:
+            return "Disputed"
+        if n >= MIN_VOTES_FOR_TIER and ratio >= PROVEN_MIN_UPVOTE_RATIO and c["uses"] >= PROVEN_MIN_USES:
+            return "Proven"
+        if c["upvotes"] >= 1 and (ratio or 0) >= 0.5:
+            return "Promising"
+        return "Unverified"
+
+    def evidence(self, doc_id: str, company_id: Optional[str] = None,
+                 problem_category: Optional[str] = None) -> str:
+        """One-line, human-readable proof the consultant can show the client."""
+        r = self.precedent_record(doc_id, company_id, problem_category)
+        if r["upvotes"] + r["downvotes"] + r["uses"] == 0 and r["cited_by"] == 0:
+            return "No consultant feedback yet."
+        bits = []
+        if r["upvotes"] + r["downvotes"]:
+            bits.append(f"{r['upvotes']} upvote(s) / {r['downvotes']} downvote(s) "
+                        f"from {r['distinct_consultants']} consultant(s)")
+        if r["outcomes_known"]:
+            bits.append(f"solved the problem {r['solved']}/{r['outcomes_known']} times used")
+        elif r["uses"]:
+            bits.append(f"used {r['uses']} time(s), outcome pending")
+        if r["cited_by"]:
+            bits.append(f"cited by {r['cited_by']} other document(s)")
+        st = r.get("same_problem_type")
+        if st and st["outcomes_known"]:
+            bits.append(f"same problem type: {st['solved']}/{st['outcomes_known']} solved")
+        sc = r.get("same_client")
+        if sc and sc["uses"]:
+            bits.append(f"already used for this client {sc['uses']}x")
+        return "; ".join(bits) + "."
+
+    # ================================================================
+    # 4. BACK-UP FOR THE AI ENGINE
+    # ================================================================
+    def verify(
+        self,
+        ai_results: Iterable[Union[str, dict]],
+        company_id: Optional[str] = None,
+        problem_category: Optional[str] = None,
+        ai_weight: float = AI_WEIGHT_DEFAULT,
+    ) -> list[dict]:
+        """
+        Attach credibility to the AI engine's candidate documents.
+
+        ai_results : list of doc ids, or dicts {"doc_id": ..., "ai_score": 0..1}
+                     (keep the AI engine's order if no scores are given)
+        Returns each document with:
+           ai_score, trust_score, tier, evidence, precedent, combined_score,
+           plus `ai_rank` and `trusted_rank` so the consultant sees both views.
+        """
+        items = []
+        n = len(list(ai_results)) if not isinstance(ai_results, list) else len(ai_results)
+        for i, r in enumerate(ai_results):
+            doc_id, ai_score = (r, None) if isinstance(r, str) else (r["doc_id"], r.get("ai_score"))
+            if ai_score is None:                      # derive from position
+                ai_score = 1.0 - i / max(1, n)
+            self._check(doc_id)
+            t = self.trust_score(doc_id)
+            items.append({
+                "doc_id": doc_id,
+                "title": self.documents[doc_id]["title"],
+                "ai_rank": i + 1,
+                "ai_score": round(ai_score, 4),
+                "trust_score": t["score"],
+                "trust_components": t["components"],
+                "tier": self.tier(doc_id),
+                "evidence": self.evidence(doc_id, company_id, problem_category),
+                "precedent": self.precedent_record(doc_id, company_id, problem_category),
+                "combined_score": round(ai_weight * ai_score + (1 - ai_weight) * t["score"], 4),
+            })
+        for rank, it in enumerate(sorted(items, key=lambda x: x["combined_score"], reverse=True), 1):
+            it["trusted_rank"] = rank
+        return sorted(items, key=lambda x: x["trusted_rank"])
+
+    def trusted_contacts(self, doc_ids: Iterable[str], top_n: int = 5) -> list[dict]:
+        """Employees behind the recommended documents, ranked by document trust."""
+        scores: Counter = Counter()
+        docs_of: dict = defaultdict(list)
+        for doc_id in doc_ids:
+            t = self.trust_score(doc_id)["score"]
+            for emp in self.documents[doc_id].get("employees_involved", []):
+                scores[emp] += t
+                docs_of[emp].append(doc_id)
+        return [{"name": n, "reliability": round(s, 3), "documents": docs_of[n]}
+                for n, s in scores.most_common(top_n)]
+
+    def leaderboard(self, top_n: int = 10) -> list[dict]:
+        """Most trusted documents overall (for monitoring the system)."""
+        rows = [{"doc_id": d, "title": doc["title"], "tier": self.tier(d),
+                 "trust_score": self.trust_score(d)["score"], **self._counts(d)}
+                for d, doc in self.documents.items()]
+        return sorted(rows, key=lambda r: r["trust_score"], reverse=True)[:top_n]
+
+    # ================================================================
+    # 5. CLIENT PROFILE (context for the precedent)
+    # ================================================================
+    def _company_categories(self, company_id: str) -> Counter:
+        cats: Counter = Counter()
+        for cid in self.companies[company_id].get("case_ids", []):
+            if cid in self.cases:
+                for c in categorize(self.cases[cid]["title"]):
+                    cats[c] += 1
+        return cats
+
+    def _similarity(self, a: str, b: str) -> float:
+        ca, cb = self.companies[a], self.companies[b]
+        sa, sb = set(self._company_categories(a)), set(self._company_categories(b))
+        jac = len(sa & sb) / len(sa | sb) if (sa | sb) else 0.0
+        return 0.4 * (ca["industry"] == cb["industry"]) + 0.2 * (ca["country"] == cb["country"]) + 0.4 * jac
+
+    def client_profile(self, company_id: str) -> dict:
+        if company_id not in self.companies:
+            raise KeyError(f"Unknown company: {company_id}")
+        co = self.companies[company_id]
+        cases = [self.cases[c] for c in co.get("case_ids", []) if c in self.cases]
+        solved = [c for c in cases if c["status"] == "solved"]
+        cats = self._company_categories(company_id)
+        docs = [d["id"] for d in self.documents.values() if d["company_id"] == company_id]
+
+        sims = sorted(
+            ((o, self._similarity(company_id, o)) for o in self.companies if o != company_id),
+            key=lambda s: s[1], reverse=True)
+        sims = [s for s in sims if s[1] > 0][:3]
+
+        predicted: Counter = Counter()
+        for other, sim in sims:
+            for cat, n in self._company_categories(other).items():
+                if cat not in cats:
+                    predicted[cat] += sim * n
+        total = sum(predicted.values()) or 1
+
+        return {
+            "company": co["name"], "country": co["country"], "industry": co["industry"],
+            "cases_total": len(cases), "cases_solved": len(solved),
+            "solve_rate": round(len(solved) / len(cases), 2) if cases else None,
+            "most_recent_case": max(cases, key=lambda c: c["year"], default=None),
+            "problem_categories": dict(cats),
+            "documents": docs,
+            "trusted_contacts": self.trusted_contacts(docs),
+            "similar_companies": [{"company": self.companies[o]["name"], "similarity": round(s, 2)}
+                                  for o, s in sims],
+            "predicted_problems": [{"problem": c, "likelihood": round(w / total, 3)}
+                                   for c, w in predicted.most_common()],
+            "prediction_basis": "own history + similar companies" if cases
+                                else "similar companies only (new client)",
+        }
+
+
+# --------------------------------------------------------------------------
+# Demo
+# --------------------------------------------------------------------------
+def _show(results: list[dict]) -> None:
+    for r in results:
+        print(f"  AI #{r['ai_rank']} -> Trusted #{r['trusted_rank']} | {r['doc_id']} "
+              f"[{r['tier']}] ai={r['ai_score']:.2f} trust={r['trust_score']:.2f} "
+              f"combined={r['combined_score']:.2f}\n      {r['title']}\n      proof: {r['evidence']}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import sys
+    import tempfile
+
+    base = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/mnt/user-data/uploads")
+    fb_file = Path(tempfile.gettempdir()) / "demo_precedent_feedback.json"
+    fb_file.unlink(missing_ok=True)
+
+    ps = PrecedentSystem(
+        base / "mockmockCompaniesDB.json", base / "mockProblemsDB.json",
+        base / "mockDocumentDB.json", feedback_path=fb_file, reference_year=2026)
+
+    # What the main AI engine returned for: "Brightwave asks for an inflation-based raise"
+    ai_output = [
+        {"doc_id": "doc-003", "ai_score": 0.93},
+        {"doc_id": "doc-008", "ai_score": 0.90},
+        {"doc_id": "doc-001", "ai_score": 0.72},
+        {"doc_id": "doc-010", "ai_score": 0.55},
+    ]
+    ctx = dict(company_id="comp-001", problem_category="salary_adjustment")
+
+    print("=== Day 1: no feedback yet (AI order is preserved) ===")
+    _show(ps.verify(ai_output, **ctx))
+
+    # Consultants work with the results and give feedback
+    for who in ["cons-A", "cons-B", "cons-C"]:
+        ps.record_use("doc-008", who, solved=True, **ctx)
+        ps.upvote("doc-008", who, **ctx)
+    ps.upvote("doc-008", "cons-A", comment="Same inflation clause we needed", **ctx)
+    for who in ["cons-A", "cons-D"]:
+        ps.record_use("doc-001", who, solved=True, **ctx)
+        ps.upvote("doc-001", who, **ctx)
+    for who in ["cons-B", "cons-C", "cons-D"]:
+        ps.record_use("doc-003", who, solved=False, **ctx)
+        ps.downvote("doc-003", who, **ctx)
+
+    print("\n=== Later: same AI output, now backed by consultant precedent ===")
+    _show(ps.verify(ai_output, **ctx))
+
+    print("\n=== Trusted contacts for these documents ===")
+    for c in ps.trusted_contacts([r["doc_id"] for r in ai_output], top_n=3):
+        print(f"  {c['name']}: {c['reliability']} {c['documents']}")
+
+    print("\n=== Client profile (Brightwave) ===")
+    p = ps.client_profile("comp-001")
+    print(json.dumps({k: p[k] for k in ("company", "cases_total", "solve_rate",
+                                        "problem_categories", "predicted_problems",
+                                        "prediction_basis")}, indent=2))
