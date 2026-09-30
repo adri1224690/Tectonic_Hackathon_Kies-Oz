@@ -1,0 +1,11 @@
+{
+  "caseLinks": [
+    {
+      "id": "clink-001",
+      "case_id": "case-001",
+      "related_case_id": "case-007",
+      "relation_type": "related",
+      "note": null
+    }
+  ]
+}
